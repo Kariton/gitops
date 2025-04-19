@@ -1,0 +1,184 @@
+---
+# yaml-language-server: $schema=https://kube-schemas.pages.dev/source.toolkit.fluxcd.io/ocirepository_v1beta2.json
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: OCIRepository
+metadata:
+  name: flux-instance
+spec:
+  interval: 1h
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 0.19.0
+  url: oci://ghcr.io/controlplaneio-fluxcd/charts/flux-instance
+  verify:
+    provider: cosign
+---
+# yaml-language-server: $schema=https://kube-schemas.pages.dev/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: flux-instance
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: flux-instance
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      strategy: rollback
+      retries: 3
+  # Note: The 'flux-operator' and 'flux-instance' resources are initialized via Terraform.
+  # The 'flux-operator' is at first not managed by Flux.
+  # Therefore, the 'dependsOn' directive is commented out to avoid circular dependency issues.
+  # dependsOn:
+  #   - name: flux-operator
+  #     namespace: flux-system
+  values:
+    instance:
+      distribution:
+        # renovate: datasource=github-releases depName=controlplaneio-fluxcd/distribution
+        version: 2.5.1
+      cluster:
+        networkPolicy: false
+      commonMetadata:
+        labels:
+          app.kubernetes.io/name: flux
+      sync:
+        kind: GitRepository
+        name: flux-system
+        # url: https://git/gitops.git  # ${FLUX_REPOSITORY}; dummy
+        # ref: refs/heads/main
+        # path: ./kubernetes/clusters/adm/
+        interval: 10m
+        pullSecret: flux-system
+      kustomize:
+        patches:
+          # Add Sops decryption to 'flux-system' Kustomization
+          - patch: |
+              - op: add
+                path: /spec/decryption
+                value:
+                  provider: sops
+                  secretRef:
+                    name: sops-age
+          #   target:
+          #     group: kustomize.toolkit.fluxcd.io
+          #     kind: Kustomization
+          # # Add shared cluster secrets for 'flux-instance' '$\{FLUX_REPOSITORY\}' variable substitution
+          # # Add cluster cattle config for 'flux-instance' '$\{CATTLE_SYSTEMPROJECTID\}' variable substitution
+          # - patch: |
+          #     - op: add
+          #       path: /spec/postBuild
+          #       value:
+          #         substituteFrom:
+          #           - kind: Secret
+          #             name: cluster-secrets-shared
+          #           - kind: ConfigMap
+          #             name: cluster-settings-cattle
+          #   target:
+          #     group: kustomize.toolkit.fluxcd.io
+          #     kind: Kustomization
+          # Only schedule on control plane nodes
+          - patch: |
+              - op: add
+                path: /spec/template/spec/tolerations
+                value:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: Exists
+              - op: add
+                path: /spec/template/spec/affinity
+                value:
+                  nodeAffinity:
+                    requiredDuringSchedulingIgnoredDuringExecution:
+                      nodeSelectorTerms:
+                        - matchExpressions:
+                            - key: node-role.kubernetes.io/control-plane
+                              operator: Exists
+            target:
+              kind: Deployment
+          # Enable in-memory kustomize builds, Increase the number of workers and limits
+          # Increase the number of reconciliations that can be performed in parallel
+          # https://fluxcd.io/flux/installation/configuration/vertical-scaling/#increase-the-number-of-workers-and-limits
+          # https://fluxcd.io/flux/installation/configuration/vertical-scaling/#enable-in-memory-kustomize-builds
+          - patch: |
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --concurrent=100
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --kube-api-qps=5000
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --kube-api-burst=10000
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --requeue-dependency=5s
+              - op: add
+                path: /spec/template/spec/volumes/0/emptyDir
+                value:
+                  medium: Memory
+            target:
+              kind: Deployment
+              name: "(kustomize-controller|helm-controller|source-controller)"
+          - patch: |
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: not-used
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: manager
+                        resources:
+                          limits:
+                            cpu: 2000m
+                            memory: 2Gi
+            target:
+              kind: Deployment
+              name: "(kustomize-controller|helm-controller|source-controller)"
+          # Post build variable substitution
+          # https://fluxcd.io/flux/components/kustomize/kustomizations/#post-build-variable-substitution
+          - patch: |
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --feature-gates=StrictPostBuildSubstitutions=true
+            target:
+              kind: Deployment
+              name: kustomize-controller
+          # Enable Helm repositories caching
+          # https://fluxcd.io/flux/installation/configuration/vertical-scaling/#enable-helm-repositories-caching
+          - patch: |
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --helm-cache-max-size=10
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --helm-cache-ttl=60m
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --helm-cache-purge-interval=5m
+            target:
+              kind: Deployment
+              name: source-controller
+          # Enable Helm near OOM detection
+          # https://fluxcd.io/flux/cheatsheets/bootstrap/#enable-helm-near-oom-detection
+          - patch: |
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --feature-gates=OOMWatch=true
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --oom-watch-memory-threshold=95
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --oom-watch-interval=500ms
+            target:
+              kind: Deployment
+              name: helm-controller

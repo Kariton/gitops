@@ -1,0 +1,208 @@
+---
+# yaml-language-server: $schema=https://kube-schemas.pages.dev/source.toolkit.fluxcd.io/helmrepository_v1.json
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: cilium
+spec:
+  interval: 1h
+  url: https://helm.cilium.io
+---
+# yaml-language-server: $schema=https://kube-schemas.pages.dev/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cilium
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: cilium
+      version: 1.17.2
+      sourceRef:
+        kind: HelmRepository
+        name: cilium
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      strategy: rollback
+      retries: 3
+  uninstall:
+    keepHistory: false
+  values:
+    kubeProxyReplacement: true
+
+    ipam:
+      mode: kubernetes
+
+    annotateK8sNode: true
+
+    initResources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 128Mi
+
+    operator:
+      rollOutPods: true
+      resources:
+        limits:
+          cpu: 500m
+          memory: 256Mi
+        requests:
+          cpu: 50m
+          memory: 128Mi
+      dashboards:
+        enabled: true
+        annotations:
+          grafana_folder: Cilium
+      prometheus:
+        enabled: true
+        serviceMonitor:
+          enabled: true
+
+    # Roll out cilium agent pods automatically when ConfigMap is updated.
+    rollOutCiliumPods: true
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+      requests:
+        cpu: 200m
+        memory: 512Mi
+
+    # Increase rate limit when doing L2 announcements
+    k8sClientRateLimit:
+      qps: 20
+      burst: 100
+
+    k8s:
+      requireIPv4PodCIDR: true
+      requireIPv6PodCIDR: true
+
+    l2announcements:
+      enabled: true
+
+    bgpControlPlane:
+      enabled: true
+
+    ciliumEndpointSlice:
+      enabled: true
+
+    envoy:
+      rollOutPods: true
+      resources:
+        limits:
+          cpu: 500m
+          memory: 256Mi
+        requests:
+          cpu: 50m
+          memory: 64Mi
+      prometheus:
+        enabled: true
+
+    # ingressController:
+    #   enabled: true
+    #   defaultSecretName: "le-${SECRET_DOMAIN/./-}-tls"
+    #   defaultSecretNamespace: cert-manager
+    #   service:
+    #     labels:
+    #       service/advertise: cilium-ingress
+    #     loadBalancerIP: ${LBIPAM_CILIUM}
+
+    gatewayAPI:
+      enabled: true
+      enableAlpn: true
+      xffNumTrustedHops: 1
+
+    hubble:
+      enabled: true
+      metrics:
+        enabled:
+          - dns:query;labelsContext=source_pod,source_workload,source_namespace,destination_ip,destination_pod,destination_workload,destination_namespace,traffic_direction
+          - drop:labelsContext=source_pod,source_workload,source_namespace,destination_ip,destination_pod,destination_workload,destination_namespace,traffic_direction
+          - tcp:labelsContext=source_pod,source_workload,source_namespace,destination_ip,destination_pod,destination_workload,destination_namespace,traffic_direction
+          - flow:labelsContext=source_pod,source_workload,source_namespace,destination_ip,destination_pod,destination_workload,destination_namespace,traffic_direction
+          - flows-to-world:any-drop;port;labelsContext=source_pod,source_workload,source_namespace,destination_ip,destination_pod,destination_workload,destination_namespace,traffic_direction
+          - port-distribution:labelsContext=source_pod,source_workload,source_namespace,destination_ip,destination_pod,destination_workload,destination_namespace,traffic_direction
+          - httpV2:labelsContext=source_pod,source_workload,source_namespace,destination_ip,destination_pod,destination_workload,destination_namespace,traffic_direction
+        serviceMonitor:
+          enabled: true
+        dashboards:
+          enabled: true
+          annotations:
+            grafana_folder: Cilium
+      relay:
+        enabled: true
+        rollOutPods: true
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        prometheus:
+          serviceMonitor:
+            enabled: true
+      ui:
+        enabled: true
+        rollOutPods: true
+        frontend:
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+        backend:
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+        ingress:
+          enabled: true
+          className: cilium
+          labels:
+            service/advertise: l2
+          hosts:
+            - &host hubble # dummy
+          tls:
+            - hosts:
+                - *host
+
+    ipv6:
+      enabled: true
+
+    localRedirectPolicy: true
+
+    ipv4NativeRoutingCIDR: 10.244.0.0/16
+    ipv6NativeRoutingCIDR: fd00:10:244::/64
+    autoDirectNodeRoutes: true
+    directRoutingSkipUnreachable: true
+    loadBalancer:
+      acceleration: native
+      mode: hybrid
+    routingMode: native
+
+    sessionAffinity: true
+
+    prometheus:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+        trustCRDsExist: true # for CI or local Helm builds, such as flux-local
+
+    dashboards:
+      enabled: true
+      annotations:
+        grafana_folder: Cilium

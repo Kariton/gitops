@@ -1,0 +1,81 @@
+---
+# yaml-language-server: $schema=https://kube-schemas.pages.dev/source.toolkit.fluxcd.io/ocirepository_v1beta2.json
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: OCIRepository
+metadata:
+  name: talos-cloud-controller-manager
+spec:
+  interval: 1h
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 0.4.5
+  url: oci://ghcr.io/siderolabs/charts/talos-cloud-controller-manager
+  verify:
+    provider: cosign
+---
+# yaml-language-server: $schema=https://kube-schemas.pages.dev/helm.toolkit.fluxcd.io/helmrelease_v2.json
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: talos-cloud-controller-manager
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: talos-cloud-controller-manager
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      strategy: rollback
+      retries: 3
+  values:
+    image:
+      pullPolicy: Always
+      tag: edge
+
+    service:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/scheme: "https"
+        prometheus.io/port: "50258"
+
+    enabledControllers:
+      - cloud-node
+      - node-csr-approval
+    #   - node-ipam-controller
+    #
+    # extraArgs:
+    #   - --allocate-node-cidrs
+    #   - --cidr-allocator-type=CloudAllocator
+    #   - --node-cidr-mask-size-ipv4=24
+    #   - --node-cidr-mask-size-ipv6=80
+
+    daemonSet:
+      enabled: true
+
+    tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/control-plane
+        operator: Exists
+      - effect: NoSchedule
+        key: node.cloudprovider.kubernetes.io/uninitialized
+        operator: Exists
+      - effect: NoSchedule
+        key: node.cilium.io/agent-not-ready
+        operator: Exists
+
+    transformations:
+      - name: nocloud
+        nodeSelector:
+          - matchExpressions:
+              - key: platform
+                operator: In
+                values:
+                  - nocloud
+        platformMetadata:
+          ProviderID: "proxmox://{{ .UUID }}"
